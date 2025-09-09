@@ -1,0 +1,88 @@
+# Ignore version control
+.git
+.gitignore
+
+# Ignore Python cache and compiled files
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+env
+pip-log.txt
+pip-delete-this-directory.txt
+.tox
+.coverage
+.coverage.*
+.pytest_cache
+nosetests.xml
+coverage.xml
+*.cover
+*.log
+.cache
+.mypy_cache
+.dmypy.json
+dmypy.json
+
+# Ignore IDE and editor files
+.vscode
+.idea
+*.swp
+*.swo
+*~
+
+# Ignore OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Ignore temporary files
+*.tmp
+*.temp
+temp/
+tmp/
+
+# Ignore documentation and readme files
+README.md
+*.md
+docs/
+
+# Ignore test files and directories
+tests/
+test/
+*_test.py
+test_*.py
+
+# Ignore CI/CD files
+.github/
+.gitlab-ci.yml
+.travis.yml
+Jenkinsfile
+
+# Ignore Docker files (except the one being built)
+docker-compose*.yml
+.dockerignore
+
+# Ignore Kubernetes files
+*.yaml
+*.yml
+k8s/
+kubernetes/
+
+# Ignore environment files
+.env
+.env.*
+*.env
+
+# Ignore build artifacts
+build/
+dist/
+*.egg-info/
+
+# Ignore logs
+logs/
+*.log
