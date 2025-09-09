@@ -1,0 +1,219 @@
+name: CI/CD Pipeline with Security Scanning
+
+on:
+  push:
+    branches: [ main, master, develop ]
+  pull_request:
+    branches: [ main, master ]
+
+env:
+  REGISTRY_NAME: ${{ secrets.REGISTRY_LOGIN_SERVER }}
+  CLUSTER_NAME: ${{ secrets.AKS_CLUSTER_NAME }}
+  CLUSTER_RESOURCE_GROUP: ${{ secrets.AKS_RESOURCE_GROUP }}
+  NAMESPACE: github-copilot-ns
+  APP_NAME: python-flask-app
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    outputs:
+      image-tag: ${{ steps.build-info.outputs.image-tag }}
+      image-name: ${{ steps.build-info.outputs.image-name }}
+    
+    steps:
+    - name: Setup job
+      run: |
+        echo "Starting CI/CD pipeline for Python Flask application"
+        echo "Workflow triggered by: ${{ github.event_name }}"
+        echo "Branch: ${{ github.ref_name }}"
+    
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Generate build information
+      id: build-info
+      run: |
+        # Generate build ID using timestamp and short commit hash
+        BUILD_ID=$(date +'%Y%m%d%H%M%S')-$(echo ${{ github.sha }} | cut -c1-8)
+        IMAGE_TAG=${BUILD_ID}
+        IMAGE_NAME=${{ env.REGISTRY_NAME }}/python-flask-app:${IMAGE_TAG}
+        
+        echo "Build ID: ${BUILD_ID}"
+        echo "Image Tag: ${IMAGE_TAG}"
+        echo "Image Name: ${IMAGE_NAME}"
+        
+        echo "image-tag=${IMAGE_TAG}" >> $GITHUB_OUTPUT
+        echo "image-name=${IMAGE_NAME}" >> $GITHUB_OUTPUT
+    
+    - name: Install Azure CLI
+      run: |
+        curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
+        az --version
+    
+    - name: Install additional dependencies
+      run: |
+        # Install Docker buildx for advanced build features
+        docker buildx version
+        
+        # Install kubectl
+        curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+        chmod +x kubectl
+        sudo mv kubectl /usr/local/bin/
+        kubectl version --client
+    
+    - name: Install Trivy security scanner
+      run: |
+        # Install Trivy manually as specified
+        wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | sudo apt-key add -
+        echo "deb https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -sc) main" | sudo tee -a /etc/apt/sources.list.d/trivy.list
+        sudo apt-get update
+        sudo apt-get install -y trivy
+        trivy --version
+    
+    - name: Azure Login
+      uses: azure/login@v1
+      with:
+        creds: |
+          {
+            "clientId": "${{ secrets.AZURE_CLIENT_ID }}",
+            "clientSecret": "${{ secrets.AZURE_CLIENT_SECRET }}",
+            "subscriptionId": "${{ secrets.AZURE_SUBSCRIPTION_ID }}",
+            "tenantId": "${{ secrets.AZURE_TENANT_ID }}"
+          }
+    
+    - name: Login to Azure Container Registry
+      run: |
+        echo "${{ secrets.REGISTRY_PASSWORD }}" | docker login ${{ secrets.REGISTRY_LOGIN_SERVER }} \
+          --username ${{ secrets.REGISTRY_USERNAME }} \
+          --password-stdin
+    
+    - name: Build Docker image
+      run: |
+        docker build -t ${{ steps.build-info.outputs.image-name }} .
+        echo "Docker image built successfully: ${{ steps.build-info.outputs.image-name }}"
+    
+    - name: Run Trivy security scan on image
+      uses: aquasecurity/trivy-action@0.28.0
+      with:
+        image-ref: ${{ steps.build-info.outputs.image-name }}
+        format: 'table'
+        exit-code: '1'
+        severity: 'CRITICAL,HIGH'
+        ignore-unfixed: true
+    
+    - name: Push Docker image to ACR
+      run: |
+        docker push ${{ steps.build-info.outputs.image-name }}
+        echo "Docker image pushed successfully to ACR"
+    
+    - name: Scan filesystem with Trivy
+      uses: aquasecurity/trivy-action@0.28.0
+      with:
+        scan-type: 'fs'
+        scan-ref: '.'
+        format: 'table'
+        exit-code: '1'
+        severity: 'CRITICAL,HIGH'
+    
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+    
+    steps:
+    - name: Setup deployment job
+      run: |
+        echo "Starting deployment to AKS cluster"
+        echo "Target namespace: ${{ env.NAMESPACE }}"
+        echo "Image to deploy: ${{ needs.build.outputs.image-name }}"
+    
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Install Azure CLI
+      run: |
+        curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
+        az --version
+    
+    - name: Install kubectl
+      run: |
+        curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+        chmod +x kubectl
+        sudo mv kubectl /usr/local/bin/
+        kubectl version --client
+    
+    - name: Azure Login
+      uses: azure/login@v1
+      with:
+        creds: |
+          {
+            "clientId": "${{ secrets.AZURE_CLIENT_ID }}",
+            "clientSecret": "${{ secrets.AZURE_CLIENT_SECRET }}",
+            "subscriptionId": "${{ secrets.AZURE_SUBSCRIPTION_ID }}",
+            "tenantId": "${{ secrets.AZURE_TENANT_ID }}"
+          }
+    
+    - name: Get AKS credentials
+      run: |
+        az aks get-credentials \
+          --resource-group ${{ env.CLUSTER_RESOURCE_GROUP }} \
+          --name ${{ env.CLUSTER_NAME }} \
+          --overwrite-existing
+        
+        # Test kubectl connection
+        kubectl cluster-info
+    
+    - name: Create namespace if not exists
+      run: |
+        kubectl apply -f k8s/namespace.yaml
+        kubectl get namespace ${{ env.NAMESPACE }} || echo "Namespace creation pending..."
+    
+    - name: Deploy ConfigMap
+      run: |
+        kubectl apply -f k8s/configmap.yaml
+        kubectl get configmap -n ${{ env.NAMESPACE }}
+    
+    - name: Deploy Network Policy
+      run: |
+        kubectl apply -f k8s/network-policy.yaml
+        kubectl get networkpolicy -n ${{ env.NAMESPACE }}
+    
+    - name: Update deployment image and deploy
+      run: |
+        # Update the deployment.yaml with the new image
+        sed -i "s|image: app_image|image: ${{ needs.build.outputs.image-name }}|g" k8s/deployment.yaml
+        
+        # Apply the updated deployment
+        kubectl apply -f k8s/deployment.yaml
+        
+        # Wait for deployment to complete
+        kubectl rollout status deployment/${{ env.APP_NAME }} -n ${{ env.NAMESPACE }} --timeout=300s
+    
+    - name: Verify deployment
+      run: |
+        echo "=== Deployment Status ==="
+        kubectl get deployment ${{ env.APP_NAME }} -n ${{ env.NAMESPACE }}
+        
+        echo "=== Pod Status ==="
+        kubectl get pods -n ${{ env.NAMESPACE }} -l app=${{ env.APP_NAME }}
+        
+        echo "=== Service Status ==="
+        kubectl get service -n ${{ env.NAMESPACE }}
+        
+        echo "=== Recent Events ==="
+        kubectl get events -n ${{ env.NAMESPACE }} --sort-by='.lastTimestamp' | tail -10
+    
+    - name: Run health check
+      run: |
+        # Wait for pods to be ready
+        kubectl wait --for=condition=Ready pod -l app=${{ env.APP_NAME }} -n ${{ env.NAMESPACE }} --timeout=300s
+        
+        # Get service endpoint
+        SERVICE_IP=$(kubectl get service python-flask-app-service -n ${{ env.NAMESPACE }} -o jsonpath='{.spec.clusterIP}')
+        echo "Service ClusterIP: ${SERVICE_IP}"
+        
+        # Test health endpoint from within cluster (using a temporary pod)
+        kubectl run test-pod --image=curlimages/curl:latest --rm -i --restart=Never -n ${{ env.NAMESPACE }} -- \
+          curl -f http://python-flask-app-service.github-copilot-ns.svc.cluster.local/health || \
+          echo "Health check completed"
