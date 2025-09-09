@@ -33,11 +33,13 @@ jobs:
     
     - name: Generate build information
       id: build-info
+      env:
+        REGISTRY_SERVER: ${{ secrets.REGISTRY_LOGIN_SERVER }}
       run: |
         # Generate build ID using timestamp and short commit hash
         BUILD_ID=$(date +'%Y%m%d%H%M%S')-$(echo ${{ github.sha }} | cut -c1-8)
         IMAGE_TAG=${BUILD_ID}
-        IMAGE_NAME="${{ env.REGISTRY_NAME }}/python-flask-app:${IMAGE_TAG}"
+        IMAGE_NAME="${REGISTRY_SERVER}/python-flask-app:${IMAGE_TAG}"
         
         echo "Build ID: ${BUILD_ID}"
         echo "Image Tag: ${IMAGE_TAG}"
@@ -95,12 +97,17 @@ jobs:
           --password-stdin
     
     - name: Build Docker image
+      env:
+        IMAGE_NAME: ${{ steps.build-info.outputs.image-name }}
       run: |
-        docker build -t ${{ steps.build-info.outputs.image-name }} .
-        echo "Docker image built successfully: ${{ steps.build-info.outputs.image-name }}"
+        echo "Building Docker image: ${IMAGE_NAME}"
+        docker build -t ${IMAGE_NAME} .
+        echo "Docker image built successfully: ${IMAGE_NAME}"
     
     - name: Run Trivy security scan on image
       uses: aquasecurity/trivy-action@0.28.0
+      env:
+        IMAGE_NAME: ${{ steps.build-info.outputs.image-name }}
       with:
         image-ref: ${{ steps.build-info.outputs.image-name }}
         format: 'table'
@@ -109,8 +116,11 @@ jobs:
         ignore-unfixed: true
     
     - name: Push Docker image to ACR
+      env:
+        IMAGE_NAME: ${{ steps.build-info.outputs.image-name }}
       run: |
-        docker push ${{ steps.build-info.outputs.image-name }}
+        echo "Pushing Docker image: ${IMAGE_NAME}"
+        docker push ${IMAGE_NAME}
         echo "Docker image pushed successfully to ACR"
     
     - name: Scan filesystem with Trivy
@@ -129,17 +139,27 @@ jobs:
     
     steps:
     - name: Setup deployment job
+      env:
+        IMAGE_NAME: ${{ needs.build.outputs.image-name }}
+        IMAGE_TAG: ${{ needs.build.outputs.image-tag }}
       run: |
         echo "Starting deployment to AKS cluster"
         echo "Target namespace: ${{ env.NAMESPACE }}"
-        echo "Image to deploy: ${{ needs.build.outputs.image-name }}"
+        echo "Image tag from build: ${IMAGE_TAG}"
+        echo "Image name from build: ${IMAGE_NAME}"
+        
+        # Debug: Check all job outputs
+        echo "All build outputs:"
+        echo "needs.build.outputs.image-tag: ${{ needs.build.outputs.image-tag }}"
+        echo "needs.build.outputs.image-name: ${{ needs.build.outputs.image-name }}"
         
         # Verify we have the image name
-        if [ -z "${{ needs.build.outputs.image-name }}" ]; then
+        if [ -z "${IMAGE_NAME}" ]; then
           echo "ERROR: Image name is empty!"
+          echo "This usually means the build job outputs are not being passed correctly."
           exit 1
         else
-          echo "Image name verified: ${{ needs.build.outputs.image-name }}"
+          echo "Image name verified: ${IMAGE_NAME}"
         fi
     
     - name: Checkout code
@@ -194,13 +214,21 @@ jobs:
         kubectl get networkpolicy -n ${{ env.NAMESPACE }}
     
     - name: Update deployment image and deploy
+      env:
+        IMAGE_NAME: ${{ needs.build.outputs.image-name }}
       run: |
         # Display the image name for debugging
-        echo "Deploying image: ${{ needs.build.outputs.image-name }}"
+        echo "Deploying image: ${IMAGE_NAME}"
+        
+        # Verify image name is available
+        if [ -z "${IMAGE_NAME}" ]; then
+          echo "ERROR: IMAGE_NAME is empty in deployment step!"
+          exit 1
+        fi
         
         # Create a temporary deployment file with the correct image
         cp k8s/deployment.yaml k8s/deployment-temp.yaml
-        sed -i "s|image: app_image|image: ${{ needs.build.outputs.image-name }}|g" k8s/deployment-temp.yaml
+        sed -i "s|image: app_image|image: ${IMAGE_NAME}|g" k8s/deployment-temp.yaml
         
         # Verify the substitution worked
         echo "Checking image in deployment file:"
