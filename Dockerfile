@@ -32,6 +32,7 @@ COPY requirements.txt .
 
 # Install Python dependencies with security considerations
 RUN pip install --no-cache-dir --upgrade pip==24.0 && \
+    pip install --no-cache-dir --upgrade setuptools>=78.1.1 && \
     pip install --no-cache-dir -r requirements.txt && \
     pip check
 
