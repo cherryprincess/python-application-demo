@@ -37,14 +37,20 @@ jobs:
         # Generate build ID using timestamp and short commit hash
         BUILD_ID=$(date +'%Y%m%d%H%M%S')-$(echo ${{ github.sha }} | cut -c1-8)
         IMAGE_TAG=${BUILD_ID}
-        IMAGE_NAME=${{ env.REGISTRY_NAME }}/python-flask-app:${IMAGE_TAG}
+        IMAGE_NAME="${{ env.REGISTRY_NAME }}/python-flask-app:${IMAGE_TAG}"
         
         echo "Build ID: ${BUILD_ID}"
         echo "Image Tag: ${IMAGE_TAG}"
         echo "Image Name: ${IMAGE_NAME}"
         
+        # Set outputs
         echo "image-tag=${IMAGE_TAG}" >> $GITHUB_OUTPUT
         echo "image-name=${IMAGE_NAME}" >> $GITHUB_OUTPUT
+        
+        # Verify outputs are set
+        echo "Outputs set:"
+        echo "image-tag: ${IMAGE_TAG}"
+        echo "image-name: ${IMAGE_NAME}"
     
     - name: Install Azure CLI
       run: |
@@ -127,6 +133,14 @@ jobs:
         echo "Starting deployment to AKS cluster"
         echo "Target namespace: ${{ env.NAMESPACE }}"
         echo "Image to deploy: ${{ needs.build.outputs.image-name }}"
+        
+        # Verify we have the image name
+        if [ -z "${{ needs.build.outputs.image-name }}" ]; then
+          echo "ERROR: Image name is empty!"
+          exit 1
+        else
+          echo "Image name verified: ${{ needs.build.outputs.image-name }}"
+        fi
     
     - name: Checkout code
       uses: actions/checkout@v4
@@ -181,11 +195,22 @@ jobs:
     
     - name: Update deployment image and deploy
       run: |
-        # Update the deployment.yaml with the new image
-        sed -i "s|image: app_image|image: ${{ needs.build.outputs.image-name }}|g" k8s/deployment.yaml
+        # Display the image name for debugging
+        echo "Deploying image: ${{ needs.build.outputs.image-name }}"
+        
+        # Create a temporary deployment file with the correct image
+        cp k8s/deployment.yaml k8s/deployment-temp.yaml
+        sed -i "s|image: app_image|image: ${{ needs.build.outputs.image-name }}|g" k8s/deployment-temp.yaml
+        
+        # Verify the substitution worked
+        echo "Checking image in deployment file:"
+        grep "image:" k8s/deployment-temp.yaml
         
         # Apply the updated deployment
-        kubectl apply -f k8s/deployment.yaml
+        kubectl apply -f k8s/deployment-temp.yaml
+        
+        # Clean up temporary file
+        rm k8s/deployment-temp.yaml
         
         # Wait for deployment to complete
         kubectl rollout status deployment/${{ env.APP_NAME }} -n ${{ env.NAMESPACE }} --timeout=300s
